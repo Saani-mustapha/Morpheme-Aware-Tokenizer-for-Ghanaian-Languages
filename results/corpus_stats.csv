@@ -1,0 +1,4 @@
+language,name,raw_files,clean_lines,train_lines,valid_lines,test_lines,words
+tw,Akan/Twi,3,62545,50036,6254,6255,1368545
+dga,Dagaare,1,30790,24632,3079,3079,906814
+ada,Dangme,1,29952,23961,2995,2996,988580
