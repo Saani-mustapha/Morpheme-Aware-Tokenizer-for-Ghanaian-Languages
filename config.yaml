@@ -3,7 +3,7 @@ project_name: ghanaian_morpheme_tokenizer
 languages:
   - twi
   - ewe
-  - dagaare
+  - dagbani
 
 data:
   raw_dir: data/raw
