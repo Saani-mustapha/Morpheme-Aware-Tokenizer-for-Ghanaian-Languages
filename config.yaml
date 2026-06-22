@@ -1,0 +1,35 @@
+project_name: ghanaian_morpheme_tokenizer
+
+languages:
+  - twi
+  - ewe
+  - dagaare
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  train_file: data/processed/train.txt
+  valid_file: data/processed/valid.txt
+  test_file: data/processed/test.txt
+
+tokenizer:
+  vocab_size: 16000
+  min_frequency: 2
+  lowercase: false
+
+special_tokens:
+  - "[PAD]"
+  - "[UNK]"
+  - "[CLS]"
+  - "[SEP]"
+  - "[MASK]"
+
+baselines:
+  - bert-base-multilingual-cased
+  - xlm-roberta-base
+  - google/mt5-small
+
+outputs:
+  bpe_dir: tokenizers/bpe
+  unigram_dir: tokenizers/unigram
+  reports_dir: reports
