@@ -1,65 +1,79 @@
 import argparse
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
-import sentencepiece as spm
 import yaml
 from tokenizers import Tokenizer
 from transformers import AutoTokenizer
 
 from metrics import (
-    tokenization_fertility,
     char_per_token_ratio,
+    get_language_tag,
+    token_length_stats,
+    tokenization_fertility,
     unk_rate,
     vocabulary_coverage,
-    token_length_stats,
 )
 
 
-def read_lines(path: str):
+def read_lines(path: str) -> list[str]:
+    """
+    Read non-empty lines from a text file.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
 
-def get_language(text: str) -> str:
-    if text.startswith("<") and ">" in text:
-        return text[1:text.index(">")]
-    return "unknown"
+def load_hf_json_tokenizer(tokenizer_json_path: str) -> tuple[Callable[[str], list[str]], set[str]]:
+    """
+    Load a custom Hugging Face tokenizer saved as tokenizer.json.
 
+    This works for both:
+        tokenizers/bpe/tokenizer.json
+        tokenizers/unigram/tokenizer.json
+    """
+    tokenizer = Tokenizer.from_file(tokenizer_json_path)
 
-def load_custom_bpe(path: str):
-    tok = Tokenizer.from_file(path)
+    def encode(text: str) -> list[str]:
+        return tokenizer.encode(text).tokens
 
-    def encode(text: str):
-        return tok.encode(text).tokens
+    vocab = set(tokenizer.get_vocab().keys())
 
-    vocab = set(tok.get_vocab().keys())
     return encode, vocab
 
 
-def load_custom_unigram(path: str):
-    sp = spm.SentencePieceProcessor(model_file=path)
+def load_transformers_tokenizer(model_name: str) -> tuple[Callable[[str], list[str]], set[str]]:
+    """
+    Load a pretrained multilingual baseline tokenizer from Hugging Face.
 
-    def encode(text: str):
-        return sp.encode(text, out_type=str)
+    Examples:
+        bert-base-multilingual-cased
+        xlm-roberta-base
+        google/mt5-small
+    """
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
-    vocab = set(sp.id_to_piece(i) for i in range(sp.get_piece_size()))
+    def encode(text: str) -> list[str]:
+        return tokenizer.tokenize(text)
+
+    vocab = set(tokenizer.get_vocab().keys())
+
     return encode, vocab
 
 
-def load_hf_tokenizer(model_name: str):
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-
-    def encode(text: str):
-        return tok.tokenize(text)
-
-    vocab = set(tok.get_vocab().keys())
-    return encode, vocab
-
-
-def evaluate_one(name, texts, encode_fn, vocab):
+def evaluate_one_tokenizer(
+    tokenizer_name: str,
+    texts: list[str],
+    encode_fn: Callable[[str], list[str]],
+    vocab: set[str],
+) -> dict:
+    """
+    Compute all tokenizer metrics for one tokenizer over one text split.
+    """
     result = {
-        "tokenizer": name,
+        "tokenizer": tokenizer_name,
+        "num_examples": len(texts),
         "fertility": tokenization_fertility(texts, encode_fn),
         "char_per_token": char_per_token_ratio(texts, encode_fn),
         "unk_rate": unk_rate(texts, encode_fn),
@@ -67,6 +81,7 @@ def evaluate_one(name, texts, encode_fn, vocab):
     }
 
     result.update(token_length_stats(texts, encode_fn))
+
     return result
 
 
@@ -78,44 +93,83 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    test_texts = read_lines(cfg["data"]["test_file"])
+    test_file = cfg["data"]["test_file"]
+    test_texts = read_lines(test_file)
+
+    print(f"Loaded {len(test_texts)} test examples from {test_file}")
 
     tokenizers = {}
 
-    bpe_encode, bpe_vocab = load_custom_bpe(
-        str(Path(cfg["outputs"]["bpe_dir"]) / "tokenizer.json")
-    )
-    tokenizers["custom_bpe"] = (bpe_encode, bpe_vocab)
+    # Custom BPE tokenizer.
+    bpe_tokenizer_path = Path(cfg["outputs"]["bpe_dir"]) / "tokenizer.json"
+    if bpe_tokenizer_path.exists():
+        encode_fn, vocab = load_hf_json_tokenizer(str(bpe_tokenizer_path))
+        tokenizers["custom_bpe"] = {
+            "encode_fn": encode_fn,
+            "vocab": vocab,
+        }
+        print(f"Loaded custom BPE tokenizer from {bpe_tokenizer_path}")
+    else:
+        print(f"Warning: BPE tokenizer not found at {bpe_tokenizer_path}")
 
-    unigram_encode, unigram_vocab = load_custom_unigram(
-        str(Path(cfg["outputs"]["unigram_dir"]) / "unigram.model")
-    )
-    tokenizers["custom_unigram"] = (unigram_encode, unigram_vocab)
+    # Custom Hugging Face unigram tokenizer.
+    unigram_tokenizer_path = Path(cfg["outputs"]["unigram_dir"]) / "tokenizer.json"
+    if unigram_tokenizer_path.exists():
+        encode_fn, vocab = load_hf_json_tokenizer(str(unigram_tokenizer_path))
+        tokenizers["custom_unigram"] = {
+            "encode_fn": encode_fn,
+            "vocab": vocab,
+        }
+        print(f"Loaded custom unigram tokenizer from {unigram_tokenizer_path}")
+    else:
+        print(f"Warning: unigram tokenizer not found at {unigram_tokenizer_path}")
 
-    for baseline in cfg["baselines"]:
-        encode, vocab = load_hf_tokenizer(baseline)
-        tokenizers[baseline] = (encode, vocab)
+    # Multilingual baseline tokenizers.
+    for baseline_name in cfg["baselines"]:
+        encode_fn, vocab = load_transformers_tokenizer(baseline_name)
+        tokenizers[baseline_name] = {
+            "encode_fn": encode_fn,
+            "vocab": vocab,
+        }
+        print(f"Loaded baseline tokenizer: {baseline_name}")
 
     rows = []
 
-    # Overall evaluation.
-    for name, (encode_fn, vocab) in tokenizers.items():
-        rows.append({
-            "language": "all",
-            **evaluate_one(name, test_texts, encode_fn, vocab)
-        })
+    # Overall evaluation across all languages.
+    for tokenizer_name, tokenizer_data in tokenizers.items():
+        rows.append(
+            {
+                "language": "all",
+                **evaluate_one_tokenizer(
+                    tokenizer_name=tokenizer_name,
+                    texts=test_texts,
+                    encode_fn=tokenizer_data["encode_fn"],
+                    vocab=tokenizer_data["vocab"],
+                ),
+            }
+        )
 
     # Per-language evaluation.
-    languages = sorted(set(get_language(t) for t in test_texts))
+    languages = sorted(set(get_language_tag(text) for text in test_texts))
 
-    for lang in languages:
-        lang_texts = [t for t in test_texts if get_language(t) == lang]
+    for language in languages:
+        language_texts = [
+            text for text in test_texts
+            if get_language_tag(text) == language
+        ]
 
-        for name, (encode_fn, vocab) in tokenizers.items():
-            rows.append({
-                "language": lang,
-                **evaluate_one(name, lang_texts, encode_fn, vocab)
-            })
+        for tokenizer_name, tokenizer_data in tokenizers.items():
+            rows.append(
+                {
+                    "language": language,
+                    **evaluate_one_tokenizer(
+                        tokenizer_name=tokenizer_name,
+                        texts=language_texts,
+                        encode_fn=tokenizer_data["encode_fn"],
+                        vocab=tokenizer_data["vocab"],
+                    ),
+                }
+            )
 
     df = pd.DataFrame(rows)
 
@@ -125,8 +179,10 @@ def main():
     output_file = output_dir / "tokenizer_metrics.csv"
     df.to_csv(output_file, index=False)
 
+    print()
     print(df)
-    print(f"Saved metrics to {output_file}")
+    print()
+    print(f"Saved tokenizer metrics to {output_file}")
 
 
 if __name__ == "__main__":
