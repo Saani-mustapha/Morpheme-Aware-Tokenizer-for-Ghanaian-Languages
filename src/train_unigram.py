@@ -1,44 +1,57 @@
 import argparse
 from pathlib import Path
 
-import sentencepiece as spm
 import yaml
+from tokenizers import Tokenizer
+from tokenizers.models import Unigram
+from tokenizers.normalizers import NFC, Sequence
+from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.trainers import UnigramTrainer
+from tokenizers.processors import TemplateProcessing
 
 
 def train_unigram_tokenizer(
     train_file: str,
     output_dir: str,
     vocab_size: int,
+    special_tokens: list[str],
 ):
     """
-    Train a SentencePiece unigram tokenizer.
+    Train a Hugging Face Unigram tokenizer and save it as tokenizer.json.
 
-    SentencePiece can train directly from raw sentences and supports unigram
-    language-model tokenization. This is useful because we do not need perfect
-    whitespace pre-tokenization.
+    This makes the unigram tokenizer usable with PreTrainedTokenizerFast,
+    so we can train a masked language model with it, just like the BPE tokenizer.
     """
+
+    tokenizer = Tokenizer(Unigram())
+
+    tokenizer.normalizer = Sequence([NFC()])
+    tokenizer.pre_tokenizer = Whitespace()
+
+    trainer = UnigramTrainer(
+        vocab_size=vocab_size,
+        special_tokens=special_tokens,
+        unk_token="[UNK]",
+        show_progress=True,
+    )
+
+    tokenizer.train(files=[train_file], trainer=trainer)
+
+    tokenizer.post_processor = TemplateProcessing(
+        single="[CLS] $A [SEP]",
+        pair="[CLS] $A [SEP] $B:1 [SEP]:1",
+        special_tokens=[
+            ("[CLS]", tokenizer.token_to_id("[CLS]")),
+            ("[SEP]", tokenizer.token_to_id("[SEP]")),
+        ],
+    )
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    model_prefix = str(output_path / "unigram")
+    tokenizer.save(str(output_path / "tokenizer.json"))
 
-    spm.SentencePieceTrainer.Train(
-        input=train_file,
-        model_prefix=model_prefix,
-        vocab_size=vocab_size,
-        model_type="unigram",
-        character_coverage=1.0,
-        unk_id=0,
-        pad_id=1,
-        bos_id=2,
-        eos_id=3,
-        user_defined_symbols="[CLS],[SEP],[MASK]",
-        input_sentence_size=2_000_000,
-        shuffle_input_sentence=True,
-    )
-
-    print(f"Saved unigram model to {model_prefix}.model")
-    print(f"Saved unigram vocab to {model_prefix}.vocab")
+    print(f"Saved Hugging Face unigram tokenizer to {output_path / 'tokenizer.json'}")
 
 
 def main():
@@ -53,6 +66,7 @@ def main():
         train_file=cfg["data"]["train_file"],
         output_dir=cfg["outputs"]["unigram_dir"],
         vocab_size=cfg["tokenizer"]["vocab_size"],
+        special_tokens=cfg["special_tokens"],
     )
 
 
