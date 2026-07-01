@@ -7,15 +7,16 @@ from tokenizers import Tokenizer
 from transformers import AutoTokenizer
 
 
-def clean_token(token: str) -> str:
-    """
-    Remove common tokenizer boundary markers.
+SPECIAL_TOKENS = {
+    "[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
+    "<pad>", "<unk>", "<s>", "</s>", "<mask>"
+}
 
-    Examples:
-        ##foɔ -> foɔ
-        ▁foɔ  -> foɔ
-        Ġfoɔ  -> foɔ
-    """
+
+def clean_token(token: str) -> str:
+    if token in SPECIAL_TOKENS:
+        return ""
+
     return (
         token.replace("##", "")
         .replace("▁", "")
